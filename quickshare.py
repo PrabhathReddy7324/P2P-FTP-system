@@ -347,9 +347,11 @@ class FileTransferService:
         self._running = False
         self._server_socket: Optional[socket.socket] = None
         self._active_transfers: Dict[str, TransferRequest] = {}
+        self._pending_requests: Dict[str, dict] = {}  # Stores pending accept/reject decisions
 
         # Callbacks
         self.on_transfer_requested: Optional[Callable[[TransferRequest], None]] = None
+        self.on_transfer_decision: Optional[Callable[[TransferRequest, Callable[[bool], None]], None]] = None
         self.on_transfer_progress: Optional[Callable[[TransferRequest], None]] = None
         self.on_transfer_completed: Optional[Callable[[TransferRequest], None]] = None
         self.on_transfer_failed: Optional[Callable[[TransferRequest, str], None]] = None
@@ -629,9 +631,46 @@ class FileTransferService:
 
             self._active_transfers[request.id] = request
 
-            # Notify about incoming transfer
-            if self.on_transfer_requested:
-                self.on_transfer_requested(request)
+            # Wait for user decision (accept/reject)
+            user_accepted = False
+            decision_event = threading.Event()
+            
+            def on_decision(accepted: bool):
+                nonlocal user_accepted
+                user_accepted = accepted
+                decision_event.set()
+            
+            # Store the decision callback for this request
+            self._pending_requests[request.id] = {
+                'request': request,
+                'callback': on_decision,
+                'socket': client_socket
+            }
+            
+            # Notify UI to show accept/reject dialog
+            if self.on_transfer_decision:
+                self.on_transfer_decision(request, on_decision)
+            else:
+                # Fallback: auto-accept if no handler
+                on_decision(True)
+            
+            # Wait for user decision (timeout after 60 seconds)
+            decision_event.wait(timeout=60)
+            
+            # Clean up pending request
+            if request.id in self._pending_requests:
+                del self._pending_requests[request.id]
+            
+            if not user_accepted:
+                # Send reject
+                reject_msg = ProtocolMessage(
+                    type=MessageType.TRANSFER_REJECT,
+                    sender_id=socket.gethostname(),
+                    payload="Transfer rejected by user"
+                )
+                self._send_message(client_socket, json.dumps(reject_msg.to_dict()))
+                request.status = TransferStatus.CANCELLED
+                return
 
             # Send accept
             accept_msg = ProtocolMessage(
@@ -973,7 +1012,7 @@ class QuickShareApp:
         self.discovery_service.on_error = lambda e: self._update_status(f"Discovery error: {e}")
 
         # Transfer callbacks
-        self.transfer_service.on_transfer_requested = self._on_transfer_requested
+        self.transfer_service.on_transfer_decision = self._on_transfer_decision_requested
         self.transfer_service.on_transfer_progress = self._on_transfer_progress
         self.transfer_service.on_transfer_completed = self._on_transfer_completed
         self.transfer_service.on_transfer_failed = self._on_transfer_failed
@@ -1033,6 +1072,32 @@ class QuickShareApp:
             if index < len(device_keys):
                 self.selected_device = self.devices[device_keys[index]]
                 self.drop_hint_label.config(text=f"Ready to send to: {self.selected_device.name}")
+
+    def _on_transfer_decision_requested(self, request: TransferRequest, decision_callback: Callable[[bool], None]):
+        """Handle incoming transfer request - show accept/reject dialog"""
+        def show_dialog():
+            self._update_status(f"📥 Incoming file from {request.sender_name}")
+            
+            # Show accept/reject dialog
+            result = messagebox.askyesno(
+                "Incoming File Transfer",
+                f"📁 {request.sender_name} wants to send you a file:\n\n"
+                f"File: {request.file_info.file_name}\n"
+                f"Size: {request.file_info.formatted_size}\n\n"
+                f"Do you want to accept this file?",
+                icon='question'
+            )
+            
+            if result:
+                self._update_status(f"Accepted file from {request.sender_name}")
+                self.transfer_info_var.set(f"Receiving: {request.file_info.file_name}")
+            else:
+                self._update_status(f"Rejected file from {request.sender_name}")
+            
+            # Call the decision callback on a background thread to not block UI
+            threading.Thread(target=lambda: decision_callback(result), daemon=True).start()
+        
+        self.root.after(0, show_dialog)
 
     def _on_transfer_requested(self, request: TransferRequest):
         """Handle incoming transfer request"""
