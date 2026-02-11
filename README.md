@@ -16,15 +16,31 @@ A Python/Tkinter implementation of the QuickShare P2P file transfer application 
 - Python 3.8+
 - No external dependencies (uses only standard library)
 
+## Project Structure
+
+```
+P2P/
+├── quickshare/              # Main package
+│   ├── __init__.py          # Package exports
+│   ├── constants.py         # Configuration (ports, chunk size, timeouts)
+│   ├── enums.py             # DeviceStatus, MessageType, TransferStatus
+│   ├── models.py            # Data classes (DeviceInfo, FileMetadata, etc.)
+│   ├── discovery.py         # UDP discovery service
+│   ├── transfer.py          # TCP file transfer service
+│   └── ui.py                # Tkinter UI
+├── main.py                  # Application entry point
+└── README.md
+```
+
 ## Usage
 
 ```bash
-python quickshare.py
+python main.py
 ```
 
 ## How It Works
 
-1. **Start the Application**: Run `quickshare.py` on both sender and receiver machines
+1. **Start the Application**: Run `python main.py` on both sender and receiver machines
 2. **Enable Receive Mode**: On the receiving machine, click "Enable Receive Mode"
 3. **Select Device**: On the sender, select the receiving device from the device list
 4. **Send File**: Click "Send File" or drag-and-drop files onto the drop zone
